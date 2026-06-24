@@ -1,0 +1,282 @@
+---
+title: "Praktikum 5 Anreg"
+author: "Muhammad Shira Pramudita | M0401241094"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown
+---
+
+# Library
+
+```{r, warning=FALSE, message=FALSE}
+library(readr)    # untuk membaca data
+library(GGally)   # untuk menghasilkan matriks hubungan antarpeubah
+library(corrplot) # untuk menghasilkan matriks korelasi
+library(dplyr)    # untuk manipulasi data
+library(car)      # untuk memeriksa multikolinearitas
+```
+
+# Data
+
+```{r, warning=FALSE, message=FALSE}
+raw <- read_csv("financials.csv")
+head(raw)
+str(raw)
+summary(raw)
+```
+
+Data yang digunakan adalah data keuangan 505 perusahaan yang tergabung dalam indeks S&P 500. Data ini memuat informasi fundamental dan pasar dari masing-masing perusahaan. Peubah yang akan digunakan dalam analisis terdiri dari 1 peubah respon yaitu Harga Saham (Price) dan 5 peubah penjelas kuantitatif yaitu Laba per Saham (EPS, *Earnings/Share*), Imbal Hasil Dividen (DY, *Dividend Yield*), Rasio Harga terhadap Penjualan (PS, *Price/Sales*), Rasio Harga terhadap Nilai Buku (PB, *Price/Book*), dan Harga Terendah 52 Minggu (Low52, *52 Week Low*), serta 1 peubah kualitatif yaitu Status Dividen (apakah perusahaan membayar dividen atau tidak).
+
+Untuk mempermudah komputasi, kolom yang tidak digunakan akan dihapus. Karena akan dilakukan dua pemodelan (model kuantitatif penuh dan model dengan peubah kualitatif), maka dibentuk dua data yang berbeda.
+
+```{r, warning=FALSE, message=FALSE}
+# Bersihkan dan seleksi peubah
+dt <- raw %>%
+  transmute(
+    Sector  = Sector,
+    Price   = Price,
+    EPS     = `Earnings/Share`,
+    DY      = `Dividend Yield`,
+    PS      = `Price/Sales`,
+    PB      = `Price/Book`,
+    Low52   = `52 Week Low`
+  ) %>%
+  filter(
+    !is.na(Price), !is.na(EPS), !is.na(DY),
+    !is.na(PS), !is.na(PB), !is.na(Low52),
+    EPS > 0, Price > 0, PS > 0, PB > 0, Low52 > 0
+  )
+
+# Tambahkan peubah kualitatif Status Dividen
+dt$Dividen <- ifelse(dt$DY > 0, "Ya", "Tidak")
+
+# Data kuantitatif saja (tanpa Sector dan Dividen)
+dq <- select(dt, -Sector, -Dividen)
+
+head(dt)
+```
+
+# Eksplorasi Data
+
+```{r}
+hist(dq$Price,
+     main = "Sebaran Harga Saham S&P 500",
+     xlab = "Price (USD)", col = "steelblue", border = "white")
+```
+
+```{r}
+boxplot(dq$Price,
+        main  = "Sebaran Harga Saham S&P 500",
+        ylab  = "Price (USD)", col = "steelblue")
+```
+
+```{r, fig.width=10, fig.height=8, warning=FALSE, message=FALSE}
+ggpairs(dq,
+        upper = list(continuous = wrap('cor', size = 3)),
+        title = "Matriks Scatterplot Data Keuangan S&P 500")
+```
+
+```{r, fig.width=7, fig.height=6}
+cor_matrix <- cor(dq, use = "complete.obs")
+
+corrplot(cor_matrix, method = "color", type = "lower",
+         col = colorRampPalette(c("red", "white", "blue"))(200),
+         addCoef.col = "black", tl.col = "black", tl.srt = 35)
+```
+
+Hasil matriks scatter plot dan korelasi menunjukkan bahwa peubah respon Price memiliki hubungan positif yang sangat kuat dengan Low52, serta hubungan positif dengan EPS, PS, dan PB. Sementara itu, hubungan antara Price dan DY cenderung lemah dan negatif (perusahaan dengan harga saham tinggi umumnya membayar dividen lebih rendah secara proporsional).
+
+Selain itu, terdapat korelasi tinggi antar peubah penjelas:
+
+1. Low52 dengan Price sangat kuat (mendekati 1) karena harga terendah 52 minggu adalah harga historis saham yang sama.
+2. PS dan PB keduanya mengandung komponen harga sehingga berkorelasi positif satu sama lain.
+3. EPS dan DY berkorelasi lemah dengan peubah lainnya.
+
+Korelasi tinggi ini mengindikasikan adanya potensi multikolinearitas yang dapat memengaruhi keakuratan model.
+
+# Pemodelan
+
+## Tanpa Fungsi
+
+Perhitungan nilai $\hat{\beta}$ secara matriks dapat dilakukan dengan rumus berikut.
+
+$$\hat{\beta} = (X'X)^{-1} X'y$$
+
+```{r}
+n <- nrow(dq)
+x0 <- rep(1, n)
+x <- data.frame(x0, dq$EPS, dq$DY, dq$PS, dq$PB, dq$Low52)
+x <- as.matrix(x)
+y <- dq$Price
+```
+
+```{r}
+beta_duga <- solve(t(x) %*% x) %*% t(x) %*% y
+beta_duga
+```
+
+Hasil tersebut menjelaskan persamaan regresi berganda yang terbentuk antara Harga Saham dengan kelima peubah penjelas. Selang kepercayaan dan pengujian signifikansi setiap parameter dapat dilakukan dengan menghitung keragaman tiap dugaan parameter. Secara umum, nilai ragam dugaan parameter $\hat{\beta}_j$ dapat dihitung melalui rumus berikut.
+
+$$\text{Var}(\hat{\beta}_j) = \hat{\sigma}^2 \, C_{jj}$$
+
+Dengan matriks $C$ adalah matriks $(X'X)^{-1}$.
+
+```{r}
+C <- data.frame(solve(t(x) %*% x))
+```
+
+Unsur diagonal dari matriks $C$ dapat digunakan untuk menghitung nilai galat baku dari setiap dugaan parameter. Galat baku ini digunakan untuk menghitung selang kepercayaan dari dugaan yang dihasilkan.
+
+$$\text{SE}(\hat{\beta}_j) = \sqrt{\text{Var}(\hat{\beta}_j)} = \sqrt{\hat{\sigma}^2 C_{jj}} = \hat{\sigma}\sqrt{c_{jj}}$$
+
+Misal ingin dihitung selang kepercayaan dari dugaan parameter $\beta_2$ (DY), maka
+
+```{r}
+y_hat     <- x %*% beta_duga
+residuals <- y - y_hat
+p         <- ncol(x)           # jumlah parameter termasuk intersep
+KTG       <- sum(residuals^2) / (n - p)
+
+c33    <- C[3, 3]              # elemen diagonal untuk beta_2 (DY)
+(se.b2 <- sqrt(KTG * c33))
+```
+
+```{r}
+alfa <- 0.05
+
+# Batas Bawah beta_2
+(bb.b2 <- beta_duga[3, 1] - abs(qt(alfa/2, df = n - p)) * se.b2)
+```
+
+```{r}
+# Batas Atas beta_2
+(ba.b2 <- beta_duga[3, 1] + abs(qt(alfa/2, df = n - p)) * se.b2)
+```
+
+Dengan demikian, kita dapat ketahui selang kepercayaan untuk $\hat{\beta}_2$ (DY) sebagai berikut.
+
+$$`r round(bb.b2, 4)` < \hat{\beta}_2 < `r round(ba.b2, 4)`$$
+
+Pada kasus selang kepercayaan $\hat{\beta}_2$ di atas, perlu diperiksa apakah rentang tersebut mengandung nilai 0 atau tidak. Jika ya, dapat dimaknai bahwa $\hat{\beta}_2$ tidak signifikan dalam taraf nyata 5%.
+
+# Dengan Fungsi
+
+```{r}
+model1 <- lm(formula = Price ~ EPS + DY + PS + PB + Low52, data = dq)
+summary(model1)
+```
+
+Dugaan parameter model secara matriks dan fungsi menghasilkan angka yang sama, sehingga perhitungan matriks memang sudah tepat. Pada ringkasan model ini dapat dilihat bahwa beberapa parameter mungkin tidak signifikan pada taraf nyata 5%, namun secara simultan model ini signifikan. Hal ini mengindikasikan kemungkinan terjadinya multikolinearitas, yang ditunjukkan pula dengan potensi perubahan tanda pada beberapa koefisien.
+
+# Pemeriksaan Multikolinearitas
+
+```{r}
+vif(model1)
+```
+
+Hasil uji VIF ini menunjukkan bahwa peubah Low52 memiliki nilai VIF yang sangat tinggi (>>10), yang mengindikasikan adanya multikolinearitas kuat. Hal ini masuk akal karena harga terendah 52 minggu merupakan harga historis saham yang sama dengan Price. Peubah PS dan PB juga mungkin tergolong tinggi karena keduanya mengandung komponen harga (Price) dalam konstruksinya. Pada analisis kali ini, penanganan dilakukan dengan menghapus peubah dengan VIF tertinggi yaitu **Low52**.
+
+# Pemodelan Kedua
+
+```{r}
+model2 <- lm(Price ~ EPS + DY + PS + PB, data = dq)
+summary(model2)
+```
+
+```{r}
+vif(model2)
+```
+
+Model hasil reduksi peubah menunjukkan nilai VIF yang lebih terkendali. Persamaan yang terbentuk dari model ini adalah:
+
+$$\hat{\text{Price}} = \hat{\beta}_0 + \hat{\beta}_1\,\text{EPS} + \hat{\beta}_2\,\text{DY} + \hat{\beta}_3\,\text{PS} + \hat{\beta}_4\,\text{PB}$$
+
+Artinya ada permasalahan lain yang mungkin belum tertangani; perlu dilakukan uji asumsi dan pemeriksaan pencilan, leverage, serta amatan berpengaruh lebih lanjut.
+
+# Pemodelan Dummy
+
+Untuk melakukan pemodelan regresi dengan peubah dummy, peubah kualitatif harus diubah menjadi tipe faktor agar bisa dilakukan regresi. Peubah kualitatif yang digunakan adalah **Status Dividen** (*Dividen*) dengan dua kategori: "Tidak" (perusahaan tidak membayar dividen) dan "Ya" (perusahaan membayar dividen). Nilai yang menjadi referensi pemodelan jika langsung menggunakan `as.factor()` adalah nilai dengan urutan abjad pertama, pada data ini adalah "Tidak".
+
+```{r}
+dt$Dividen <- as.factor(dt$Dividen)
+str(dt[, c("Price", "EPS", "DY", "PS", "PB", "Low52", "Dividen")])
+```
+
+```{r}
+model3 <- lm(Price ~ EPS + DY + PS + PB + Dividen, data = dt)
+summary(model3)
+```
+
+Interpretasi pada peubah dengan nilai kuantitatif sama seperti interpretasi biasanya, yang berbeda hanya pada peubah dummy-nya. Pada persamaan tersebut, interpretasi yang dapat ditulis adalah sebagai berikut:
+
+1. Perusahaan yang membayar dividen (*Dividen* = "Ya") memiliki dugaan rata-rata harga saham yang berbeda dibandingkan perusahaan yang tidak membayar dividen (*Dividen* = "Tidak") — besarnya perbedaan ditunjukkan oleh koefisien `DividenYa` dengan tanda dan nilai sesuai output, *ceteris paribus*.
+
+# Uji Hipotesis Kesamaan Parameter Regresi
+
+Misal ingin dilakukan pemodelan dengan peubah respon Harga Saham menggunakan 4 peubah penjelas: EPS, DY, PS, dan PB.
+
+```{r}
+model4 <- lm(Price ~ EPS + DY + PS + PB, data = dq)
+summary(model4)
+```
+
+```{r}
+vif(model4)
+```
+
+Regresi yang dihasilkan tidak mengalami masalah multikolinearitas berat. Selanjutnya dapat dilakukan serangkaian uji untuk memeriksa apakah $\beta_\text{PS}$ dan $\beta_\text{PB}$ dapat diasumsikan sama, mengingat keduanya merupakan rasio penilaian (*valuation multiple*) yang mengandung komponen harga.
+
+Hipotesis yang diuji adalah:
+
+$$H_0: \beta_\text{PS} = \beta_\text{PB}$$
+$$H_1: \beta_\text{PS} \neq \beta_\text{PB}$$
+
+Karena peubah EPS dan DY mungkin tidak signifikan maka dapat diasumsikan nol sehingga model dapat disederhanakan menjadi:
+
+$$\text{Price} = \beta_0 + \beta_\text{PS}\,\text{PS} + \beta_\text{PB}\,\text{PB} + \varepsilon$$
+
+Jika $H_0$ benar $(\beta_\text{PS} = \beta_\text{PB} = \beta')$, model bisa ditulis ulang sebagai:
+
+$$\text{Price} = \beta_0 + \beta'\,(\text{PS} + \text{PB}) + \varepsilon$$
+
+```{r}
+# Buat peubah baru
+dq$X_new <- dq$PS + dq$PB
+
+# Model penuh (Full Model)
+model_full <- lm(Price ~ PS + PB, data = dq)
+
+# Model terbatas (Restricted Model)
+model_restricted <- lm(Price ~ X_new, data = dq)
+
+# Bandingkan dengan Uji F
+anova(model_restricted, model_full)
+```
+
+Hasil perbandingan menunjukkan apakah nilai p lebih kecil atau lebih besar dari alpha. Jika p < 0.05 maka tolak $H_0$, artinya $\beta_\text{PS}$ dan $\beta_\text{PB}$ berbeda secara signifikan sehingga tidak dapat digabung. Selanjutnya dapat dipilih apakah akan menggunakan model dengan 4 peubah atau hanya 2 peubah (PS + PB) berdasarkan indikator Adjusted R-Squared, AIC, dan BIC.
+
+```{r}
+model_all    <- lm(Price ~ EPS + DY + PS + PB, data = dq)
+model_signif <- lm(Price ~ PS + PB,            data = dq)
+summary(model_all)
+summary(model_signif)
+```
+
+```{r}
+perbandingan <- data.frame(
+  Model        = c("Peubah Penuh (4)", "Peubah Signifikan (2)"),
+  Adjusted_R2  = as.numeric(c(
+    summary(model_all)$adj.r.squared,
+    summary(model_signif)$adj.r.squared
+  )),
+  AIC = as.numeric(c(AIC(model_all), AIC(model_signif))),
+  BIC = as.numeric(c(BIC(model_all), BIC(model_signif)))
+)
+perbandingan
+```
+
+Berdasarkan indikator Adjusted R-Squared, AIC, dan BIC maka model terbaik dipilih. Interpretasi model terpilih:
+
+1. Dugaan rataan Harga Saham jika semua peubah penjelas bernilai 0 adalah sebesar nilai intersep (dalam USD).
+2. Dugaan rataan Harga Saham akan berubah sebesar koefisien PS untuk setiap kenaikan satu unit PS, dengan asumsi PB konstan.
+3. Dugaan rataan Harga Saham akan berubah sebesar koefisien PB untuk setiap kenaikan satu unit PB, dengan asumsi PS konstan.

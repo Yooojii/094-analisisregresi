@@ -1,0 +1,485 @@
+---
+title: "Praktikum 6 Anreg"
+author: "Muhammad Shira Pramudita | M0401241094"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown
+---
+
+# Library
+
+```{r, warning=FALSE, message=FALSE}
+library(readr)      # untuk membaca data
+library(GGally)     # untuk menghasilkan matriks hubungan antarpeubah
+library(corrplot)   # untuk menghasilkan matriks korelasi
+library(dplyr)      # untuk manipulasi data
+library(car)        # untuk memeriksa multikolinearitas
+library(stargazer)  # untuk menampilkan hasil perbandingan regresi
+library(lmtest)     # untuk uji kehomogenan ragam sisaan dan saling bebas
+library(olsrr)      # untuk pemeriksaan amatan tidak biasa
+```
+
+# Data
+
+```{r, warning=FALSE, message=FALSE}
+raw <- read_csv("financials.csv")
+```
+
+```{r}
+# Seleksi dan bersihkan data
+dt <- raw %>%
+  transmute(
+    Price = Price,
+    EPS   = `Earnings/Share`,
+    DY    = `Dividend Yield`,
+    PS    = `Price/Sales`,
+    PB    = `Price/Book`,
+    Low52 = `52 Week Low`
+  ) %>%
+  filter(
+    !is.na(Price), !is.na(EPS), !is.na(DY),
+    !is.na(PS), !is.na(PB), !is.na(Low52),
+    EPS > 0, Price > 0, PS > 0, PB > 0, Low52 > 0
+  )
+
+dt
+```
+
+```{r}
+str(dt)
+```
+
+```{r}
+summary(dt)
+```
+
+Data yang digunakan adalah data keuangan perusahaan-perusahaan dalam indeks S&P 500 dengan 1 peubah respon yaitu Harga Saham (Price) dan 5 peubah penjelas. Peubah tersebut adalah Laba per Saham (EPS, *Earnings/Share*), Imbal Hasil Dividen (DY, *Dividend Yield*), Rasio Harga terhadap Penjualan (PS, *Price/Sales*), Rasio Harga terhadap Nilai Buku (PB, *Price/Book*), dan Harga Terendah 52 Minggu (Low52, *52 Week Low*).
+
+# Eksplorasi Data
+
+## Peubah Respon
+
+```{r}
+hist(dt$Price,
+     main = "Sebaran Harga Saham S&P 500",
+     xlab = "Price (USD)", col = "steelblue", border = "white")
+```
+
+```{r}
+boxplot(dt$Price,
+        main = "Sebaran Harga Saham S&P 500",
+        ylab = "Price (USD)", col = "steelblue")
+```
+
+## Peubah Penjelas vs Peubah Respon
+
+### EPS (Earnings/Share)
+
+```{r}
+plot(dt$EPS, dt$Price,
+     xlab = "Earnings per Share (USD)",
+     ylab = "Price (USD)",
+     main = "EPS vs Harga Saham")
+```
+
+Hubungan antara peubah EPS dan Price cenderung positif namun tidak sepenuhnya linear, ada beberapa amatan dengan nilai EPS tinggi yang menyimpang dari pola umum.
+
+### DY (Dividend Yield)
+
+```{r}
+plot(dt$DY, dt$Price,
+     xlab = "Dividend Yield (%)",
+     ylab = "Price (USD)",
+     main = "DY vs Harga Saham")
+```
+
+Hubungan antara peubah DY dan Price tidak jelas arahnya, ada amatan dengan nilai DY 0 yang tersebar pada berbagai level harga.
+
+### PS (Price/Sales)
+
+```{r}
+plot(dt$PS, dt$Price,
+     xlab = "Price/Sales Ratio",
+     ylab = "Price (USD)",
+     main = "PS vs Harga Saham")
+```
+
+Hubungan positif tampak antara peubah PS dan Price karena PS sendiri mengandung komponen harga. Ada beberapa amatan dengan nilai yang jauh dari amatan lainnya.
+
+### PB (Price/Book)
+
+```{r}
+plot(dt$PB, dt$Price,
+     xlab = "Price/Book Ratio",
+     ylab = "Price (USD)",
+     main = "PB vs Harga Saham")
+```
+
+Hubungan antara peubah PB dan Price cenderung lemah dan tersebar, ada amatan dengan nilai PB sangat tinggi (perusahaan dengan nilai buku rendah).
+
+### Low52 (52 Week Low)
+
+```{r}
+plot(dt$Low52, dt$Price,
+     xlab = "52-Week Low Price (USD)",
+     ylab = "Price (USD)",
+     main = "Low52 vs Harga Saham")
+```
+
+Hubungan linearitas sangat kuat antara peubah Low52 dan Price. Hal ini sangat wajar karena harga terendah 52 minggu adalah harga historis saham yang sama, sehingga keduanya bergerak bersama.
+
+## Korelasi
+
+```{r, fig.width=10, fig.height=8, warning=FALSE, message=FALSE}
+ggpairs(dt,
+        upper = list(continuous = wrap('cor', size = 3)),
+        title = "Matriks Scatterplot Data Keuangan S&P 500")
+```
+
+```{r, fig.width=7, fig.height=6}
+cor_matrix <- cor(dt, use = "complete.obs")
+
+corrplot(cor_matrix, method = "color", type = "lower",
+         col = colorRampPalette(c("red", "white", "blue"))(200),
+         addCoef.col = "black", tl.col = "black", tl.srt = 35)
+```
+
+Hasil matriks scatter plot dan korelasi menunjukkan bahwa peubah respon Price memiliki hubungan positif yang sangat kuat dengan Low52, serta hubungan positif dengan EPS, PS, dan PB. Sementara itu, hubungan antara Price dan DY sangat lemah.
+
+Selain itu, terdapat korelasi tinggi antar peubah penjelas:\
+1. Low52 dan Price berkorelasi sangat kuat (mendekati 1.0).\
+2. PS dan PB berkorelasi positif karena keduanya mengandung komponen harga.\
+3. Low52 juga berkorelasi kuat dengan PS dan PB.
+
+Korelasi yang tinggi ini mengindikasikan adanya potensi multikolinearitas yang dapat memengaruhi keakuratan model yang akan dibentuk.
+
+# Pemodelan
+
+```{r}
+model1 <- lm(formula = Price ~ ., data = dt)
+summary(model1)
+```
+
+Persamaan yang terbentuk dari pemodelan awal adalah:
+
+$$\hat{\text{Price}} = \hat{\beta}_0 + \hat{\beta}_1\,\text{EPS} + \hat{\beta}_2\,\text{DY} + \hat{\beta}_3\,\text{PS} + \hat{\beta}_4\,\text{PB} + \hat{\beta}_5\,\text{Low52}$$
+
+Pada ringkasan model ini dapat dilihat bahwa secara simultan minimal ada satu peubah penjelas yang berpengaruh signifikan terhadap Price. Namun demikian, beberapa koefisien mungkin tidak sesuai arah yang diharapkan atau tidak signifikan secara individual, mengindikasikan adanya permasalahan multikolinearitas dalam model. Selanjutnya diperlukan pemeriksaan multikolinearitas dilanjutkan dengan diagnosis sisaan.
+
+# Pemeriksaan Multikolinearitas
+
+## Perubahan Peubah
+
+```{r, warning=FALSE, message=FALSE}
+mod1 <- lm(Price ~ ., dt[1:2])
+mod2 <- lm(Price ~ ., dt[1:3])
+mod3 <- lm(Price ~ ., dt[1:4])
+mod4 <- lm(Price ~ ., dt[1:5])
+mod5 <- lm(Price ~ ., dt)
+
+stargazer(mod1, mod2, mod3, mod4, mod5,
+          type = "text", single.row = TRUE)
+```
+
+Terdapat perubahan tanda dan besar dugaan parameter ketika peubah baru ditambahkan. Hasil ini mengindikasikan adanya permasalahan multikolinearitas dalam model.
+
+## Perubahan Banyak Data
+
+```{r, warning=FALSE}
+n_half  <- floor(nrow(dt) * 0.7)
+mod5_1  <- lm(Price ~ ., dt[1:n_half, ])
+
+stargazer(summary(mod5)$coefficients, summary(mod5_1)$coefficients,
+          type = "text", font.size = "small")
+```
+
+Terdapat dugaan parameter yang mengalami perubahan besar ketika jumlah amatan berbeda, mengindikasikan model bermasalah akibat multikolinearitas.
+
+## Akar Ciri
+
+```{r}
+x_mat <- as.matrix(dt[, -1])   # semua peubah penjelas
+r     <- cor(x_mat)
+(ev   <- eigen(r)$values)
+```
+
+```{r}
+# Uji simultan
+if ((max(ev) / min(ev)) <= 100) {
+  cat("Tidak ada multikolinearitas\n")
+} else if ((max(ev) / min(ev)) > 100 & (max(ev) / min(ev)) <= 1000) {
+  cat("Ada multikolinearitas yang lemah\n")
+} else {
+  cat("Ada multikolinearitas yang kuat\n")
+}
+```
+
+```{r}
+# Uji parsial
+if (all((max(ev) / ev) <= 1000)) {
+  cat("Tidak ada multikolinearitas\n")
+} else {
+  cat("Ada multikolinearitas pada peubah penjelas ke:", which((max(ev) / ev) > 1000), "\n")
+}
+```
+
+## Nilai VIF
+
+```{r}
+vif(model1)
+```
+
+Hasil pemeriksaan dengan akar ciri menunjukkan kondisi multikolinearitas model. Nilai VIF menunjukkan bahwa peubah **Low52** memiliki VIF sangat tinggi (>>10), yang sangat wajar karena Low52 adalah harga historis saham yang sama dengan Price. Pada analisis kali ini, penanganan dilakukan dengan menghapus peubah **Low52** karena memiliki VIF tertinggi dan secara konseptual hampir identik dengan peubah respon.
+
+# Pemodelan Penyisihan Peubah
+
+```{r}
+model2 <- lm(Price ~ EPS + DY + PS + PB, data = dt)
+summary(model2)
+```
+
+Persamaan yang terbentuk adalah:
+
+$$\hat{\text{Price}} = \hat{\beta}_0 + \hat{\beta}_1\,\text{EPS} + \hat{\beta}_2\,\text{DY} + \hat{\beta}_3\,\text{PS} + \hat{\beta}_4\,\text{PB}$$
+
+Pada ringkasan model ini dapat dilihat bahwa secara simultan minimal ada satu peubah penjelas yang berpengaruh signifikan terhadap Price.
+
+## Nilai VIF
+
+```{r}
+vif(model2)
+```
+
+Model hasil reduksi peubah menunjukkan nilai VIF yang lebih terkendali. Namun masih perlu dilakukan pengujian asumsi sisaan dan pemeriksaan amatan tidak biasa untuk memastikan validitas model.
+
+# Pengujian Asumsi
+
+## Eksplorasi Grafik
+
+### Plot Sisaan vs Y Duga
+
+```{r}
+plot(model2, 1)
+```
+
+Perhatikan pola yang terbentuk pada plot sisaan vs nilai dugaan:\
+1. Apakah sisaan tersebar di sekitar 0? → Nilai harapan sisaan\
+2. Apakah lebar pita relatif sama di setiap nilai dugaan? → Keragaman sisaan\
+3. Apakah ada pola tertentu? → Linearitas model\
+
+### Plot Sisaan vs Urutan
+
+```{r}
+plot(x = 1:nrow(dt),
+     y = model2$residuals,
+     type = 'b',
+     ylab = "Residuals",
+     xlab = "Observation",
+     main = "Sisaan vs Urutan Amatan")
+abline(h = 0, col = "red", lty = 2)
+```
+
+Periksa apakah ada pola bergelombang (tanda autokorelasi) atau tebaran acak (sisaan saling bebas).
+
+### QQ Plot
+
+```{r}
+plot(model2, 2)
+```
+
+Apakah amatan mengikuti garis diagonal? Jika ya, sisaan menyebar normal.
+
+## Uji Formal
+
+### Nilai Harapan Sisaan Sama dengan Nol
+
+```{r}
+t.test(model2$residuals, mu = 0, conf.level = 0.95)
+```
+
+Nilai p pada uji t dibandingkan dengan alpha 5%. Jika p > 0.05 maka asumsi nilai harapan sisaan sama dengan nol terpenuhi.
+
+### Ragam Sisaan Homogen (Breusch-Pagan)
+
+```{r}
+bptest(model2)
+```
+
+Nilai p pada uji Breusch-Pagan dibandingkan dengan alpha 5%. Jika p > 0.05 maka asumsi ragam sisaan homogen (homoskedastisitas) terpenuhi.
+
+### Sisaan Saling Bebas (Durbin-Watson)
+
+```{r}
+dwtest(model2)
+```
+
+Nilai p pada uji Durbin-Watson dibandingkan dengan alpha 5%. Jika p > 0.05 maka asumsi sisaan saling bebas terpenuhi.
+
+### Normalitas Sisaan (Shapiro-Wilk)
+
+```{r}
+shapiro.test(model2$residuals)
+```
+
+Nilai p pada uji Shapiro-Wilk dibandingkan dengan alpha 5%. Jika p > 0.05 maka asumsi normalitas sisaan terpenuhi.
+
+Periksa semua hasil uji di atas secara bersama. Jika ada asumsi yang tidak terpenuhi, perlu dilakukan penanganan lebih lanjut (transformasi, pemilihan model alternatif). Jika semua asumsi terpenuhi namun model masih kurang baik, kemungkinan disebabkan oleh keberadaan amatan yang tidak biasa seperti pencilan, leverage, atau amatan berpengaruh.
+
+# Pemeriksaan Amatan Tidak Biasa
+
+```{r}
+# Fungsi bawaan R
+ri_stud    <- rstudent(model2)
+ri_stan    <- rstandard(model2)
+hii_fungsi <- hatvalues(model2)
+
+# Manual
+X           <- model.matrix(model2)
+X_inv_xt    <- X %*% solve(t(X) %*% X) %*% t(X)
+hii_manual  <- diag(X_inv_xt)
+anova_model <- anova(model2)
+s           <- sqrt(anova_model["Residuals", "Mean Sq"])
+ei          <- model2$residuals
+ri_manual   <- ei / (s * sqrt(1 - hii_manual))
+
+nilai <- data.frame(ri_stud, ri_stan, ri_manual, hii_fungsi, hii_manual)
+print(round(nilai, 4))
+```
+
+## Pencilan
+
+```{r}
+absri   <- abs(nilai[, 2])
+pencilan <- which(absri > 2)
+cat("Amatan yang terdeteksi sebagai pencilan:", pencilan, "\n")
+```
+
+Amatan dengan nilai sisaan terstandarkan mutlak lebih dari 2 terdeteksi sebagai pencilan (*outlier*).
+
+## Leverage
+
+```{r}
+n       <- nrow(dt)
+p       <- length(model2$coefficients)
+cutoff  <- 2 * p / n
+
+titik_leverage <- which(hii_fungsi > cutoff)
+cat("Amatan yang terdeteksi sebagai leverage:", titik_leverage, "\n")
+cat("Nilai cutoff leverage:", round(cutoff, 4), "\n")
+```
+
+```{r}
+ols_plot_resid_lev(model2)
+```
+
+Amatan tertentu terdeteksi sebagai titik leverage karena memiliki nilai hat ($h_{ii}$) melampaui nilai cutoff $2p/n$.
+
+## Amatan Berpengaruh
+
+### Jarak Cook
+
+```{r}
+di           <- cooks.distance(model2)
+f_crit       <- qf(0.05, p, n - p, lower.tail = FALSE)
+cook_result  <- data.frame(CookDistance = round(di, 6), Berpengaruh = di > f_crit)
+print(cook_result)
+```
+
+```{r}
+df_cook <- data.frame(obs = seq_along(di), cooks = di)
+library(ggplot2)
+ggplot(df_cook, aes(x = obs, y = cooks)) +
+  geom_point(color = "steelblue") +
+  geom_hline(yintercept = f_crit, linetype = "dashed", color = "red") +
+  labs(title  = "Cook's Distance",
+       subtitle = "Garis merah = nilai kritis",
+       x = "Nomor Amatan",
+       y = "Cook's Distance")
+```
+
+Pemeriksaan amatan berpengaruh dengan jarak Cook menunjukkan apakah ada amatan yang melebihi ambang batas kritis.
+
+### DFBETAS
+
+```{r}
+ols_plot_dfbetas(model2)
+```
+
+Hasil DFBETAS menunjukkan pengaruh setiap observasi terhadap masing-masing koefisien regresi. DFBETAS mengukur seberapa besar koefisien regresi berubah jika suatu observasi dihapus dari model.
+
+### DFFITS
+
+```{r}
+ols_plot_dffits(model2)
+```
+
+```{r}
+DFFITSi   <- dffits(model2)
+cutoff_df <- 2 * sqrt(p / n)
+
+amatan_berpengaruh <- which(abs(DFFITSi) > cutoff_df)
+cat("Amatan berpengaruh berdasarkan DFFITS:", sort(unique(amatan_berpengaruh)), "\n")
+```
+
+Hasil DFFITS menunjukkan pengaruh observasi terhadap nilai prediksi $\hat{Y}$. DFFITS mengukur seberapa besar nilai prediksi $\hat{Y}_i$ berubah jika suatu observasi dihapus dari model.
+
+# Pemodelan Penyisihan Amatan
+
+```{r}
+# Identifikasi semua amatan tidak biasa
+amatan_unik <- sort(unique(c(pencilan, titik_leverage, amatan_berpengaruh)))
+cat("Semua amatan tidak biasa:", amatan_unik, "\n")
+```
+
+```{r}
+# Buat model-model dengan penyisihan amatan berbeda
+models_list <- list()
+
+# Model tanpa penyisihan (baseline)
+models_list[["Model Baseline"]] <- model2
+
+# Penyisihan masing-masing amatan individu
+for (i in seq_along(amatan_unik)) {
+  idx  <- amatan_unik[i]
+  nm   <- paste0("Tanpa Amatan ", idx)
+  dt_i <- dt[-idx, ]
+  models_list[[nm]] <- lm(Price ~ EPS + DY + PS + PB, data = dt_i)
+}
+
+# Penyisihan semua sekaligus
+if (length(amatan_unik) > 0) {
+  dt_all <- dt[-amatan_unik, ]
+  models_list[["Tanpa Semua Amatan Tidak Biasa"]] <- lm(Price ~ EPS + DY + PS + PB, data = dt_all)
+}
+```
+
+```{r}
+get_metrics <- function(model) {
+  adj_r2 <- summary(model)$adj.r.squared
+  sse    <- sum(model$residuals^2)
+  return(c(adj_r2, sse))
+}
+
+model_metrics <- data.frame(
+  Model       = names(models_list),
+  Adjusted_R2 = sapply(models_list, function(m) get_metrics(m)[1]),
+  SSE         = sapply(models_list, function(m) get_metrics(m)[2]),
+  row.names   = NULL
+)
+
+print(model_metrics)
+```
+
+Berdasarkan hasil perbandingan tersebut, model terbaik dipilih berdasarkan nilai Adjusted R-Squared terbesar dan SSE terkecil. Model terpilih menunjukkan seberapa besar dampak amatan tidak biasa terhadap kualitas pemodelan harga saham S&P 500.
+
+```{r}
+# Tampilkan perbandingan model baseline vs model terbaik
+best_idx   <- which.max(model_metrics$Adjusted_R2)
+best_model <- models_list[[best_idx]]
+
+stargazer(model2, best_model,
+          type      = "text",
+          font.size = "small",
+          report    = "vc*p",
+          column.labels = c("Baseline", "Model Terbaik"))
+```
